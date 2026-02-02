@@ -46,7 +46,9 @@ if ($isLoggedIn) {
 <body>
     <header class="site-header">
         <nav class="navbar">
-            <a class="logo" href="index.php">CareerNest</a>
+            <a class="logo" href="index.php">
+                <img src="assets/img/logo1.png" alt="CareerNest logo">
+            </a>
             <button class="menu-toggle" type="button" aria-label="Toggle navigation">
                 <i class="fa-solid fa-bars"></i>
             </button>

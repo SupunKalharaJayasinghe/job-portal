@@ -3,7 +3,7 @@
         <div class="footer-content">
             <div class="footer-top">
                 <div class="footer-brand">
-                    <h3>CareerNest</h3>
+                    <img src="assets/img/logo1.png" alt="CareerNest logo" class="footer-logo">
                     <p>Connect with top talent and opportunities across technology, design, marketing, and more.</p>
                 </div>
                 <div class="footer-columns">

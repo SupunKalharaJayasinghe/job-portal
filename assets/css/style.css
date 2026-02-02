@@ -162,9 +162,18 @@ main {
 }
 
 .logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
     font-size: 1.375rem;
     font-weight: 700;
     color: var(--primary);
+}
+
+.logo img {
+    height: 55px;
+    width: auto;
+    display: block;
 }
 
 .nav-links {
@@ -194,6 +203,13 @@ main {
     border-radius: 50% !important;
     object-fit: cover !important;
     border: 2px solid var(--border);
+}
+
+.footer-logo {
+    height: 55px;
+    width: auto;
+    display: block;
+    margin-bottom: 0.5rem;
 }
 
 /* Hero Section */
