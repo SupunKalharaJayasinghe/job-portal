@@ -43,7 +43,8 @@ $totalPages = 1;
 
 // Base query joining employer profiles and only active jobs
 $baseSql = " FROM jobs
-             JOIN employer_profiles ON jobs.employer_id = employer_profiles.user_id
+             JOIN users employer_user ON jobs.employer_id = employer_user.id
+             LEFT JOIN employer_profiles ON jobs.employer_id = employer_profiles.user_id
              WHERE jobs.status = 'active'";
 
 $conditions = [];
@@ -51,7 +52,7 @@ $params = [];
 $types = '';
 
 if ($keywords !== '') {
-    $conditions[] = "(jobs.title LIKE ? OR jobs.description LIKE ? OR employer_profiles.company_name LIKE ?)";
+    $conditions[] = "(jobs.title LIKE ? OR jobs.description LIKE ? OR COALESCE(employer_profiles.company_name, employer_user.username) LIKE ?)";
     $like = '%' . $keywords . '%';
     $params[] = $like;
     $params[] = $like;
@@ -111,7 +112,7 @@ $countSql = 'SELECT COUNT(*) AS total' . $baseSql . $whereSql;
 if ($types !== '') {
     $countStmt = $conn->prepare($countSql);
     if ($countStmt) {
-        $countStmt->bind_param($types, ...$params);
+        bindStmtParams($countStmt, $types, $params);
         $countStmt->execute();
         $countRes = $countStmt->get_result();
         if ($countRes && $row = $countRes->fetch_assoc()) {
@@ -136,7 +137,7 @@ if ($totalJobs > 0) {
 
 // Fetch paginated jobs
 $dataSql = 'SELECT jobs.*,
-                   employer_profiles.company_name,
+                   COALESCE(employer_profiles.company_name, employer_user.username) AS company_name,
                    employer_profiles.company_logo'
     . $baseSql . $whereSql .
     ' ORDER BY jobs.created_at DESC
@@ -149,7 +150,7 @@ $dataParams[] = $offset;
 
 $stmt = $conn->prepare($dataSql);
 if ($stmt) {
-    $stmt->bind_param($dataTypes, ...$dataParams);
+    bindStmtParams($stmt, $dataTypes, $dataParams);
     $stmt->execute();
     $jobResult = $stmt->get_result();
     if ($jobResult && $jobResult->num_rows > 0) {
@@ -186,6 +187,45 @@ if (!function_exists('formatRelativeTime')) {
         return date('M j, Y', $timestamp);
     }
 }
+
+$hasFilters = $keywords !== ''
+    || $location !== ''
+    || $category !== ''
+    || !empty($selectedJobTypes)
+    || !empty($selectedExperience)
+    || $minSalary !== null
+    || $maxSalary !== null;
+
+$filterChips = [];
+if ($keywords !== '') {
+    $filterChips[] = ['label' => 'Keywords', 'value' => $keywords];
+}
+if ($location !== '') {
+    $filterChips[] = ['label' => 'Location', 'value' => $location];
+}
+if ($category !== '') {
+    $filterChips[] = ['label' => 'Category', 'value' => $category];
+}
+if (!empty($selectedJobTypes)) {
+    $filterChips[] = ['label' => 'Type', 'value' => implode(', ', $selectedJobTypes)];
+}
+if (!empty($selectedExperience)) {
+    $filterChips[] = ['label' => 'Experience', 'value' => implode(', ', $selectedExperience)];
+}
+if ($minSalary !== null || $maxSalary !== null) {
+    $salaryChip = '';
+    if ($minSalary !== null && $maxSalary !== null) {
+        $salaryChip = '$' . number_format((float) $minSalary) . ' - $' . number_format((float) $maxSalary);
+    } elseif ($minSalary !== null) {
+        $salaryChip = 'From $' . number_format((float) $minSalary);
+    } else {
+        $salaryChip = 'Up to $' . number_format((float) $maxSalary);
+    }
+    $filterChips[] = ['label' => 'Salary', 'value' => $salaryChip];
+}
+
+$showingStart = $totalJobs > 0 ? ($offset + 1) : 0;
+$showingEnd = $totalJobs > 0 ? min($offset + max(count($jobs), 0), $totalJobs) : 0;
 
 include 'includes/header.php';
 ?>
@@ -253,118 +293,174 @@ include 'includes/header.php';
             </form>
         </aside>
 
-        <div class="list-grid">
-            <?php if (!empty($jobs)) : ?>
-                <?php foreach ($jobs as $job) : ?>
-                    <?php
-                    $min = isset($job['salary_min']) ? (float) $job['salary_min'] : 0;
-                    $max = isset($job['salary_max']) ? (float) $job['salary_max'] : 0;
-                    $salaryText = 'Negotiable';
-                    if ($min > 0 && $max > 0) {
-                        $salaryText = '$' . number_format($min) . ' - $' . number_format($max);
-                    } elseif ($min > 0) {
-                        $salaryText = 'From $' . number_format($min);
-                    } elseif ($max > 0) {
-                        $salaryText = 'Up to $' . number_format($max);
-                    } elseif (!empty($job['salary'])) {
-                        $salaryText = $job['salary'];
-                    }
-                    $postedAgo = !empty($job['created_at']) ? formatRelativeTime($job['created_at']) : '';
-                    ?>
-                    <article class="job-card">
-                        <div class="job-card-header">
-                            <?php if (!empty($job['company_logo'])) : ?>
-                                <div class="job-card-logo">
-                                    <img src="uploads/logos/<?php echo htmlspecialchars($job['company_logo']); ?>" alt="<?php echo htmlspecialchars($job['company_name']); ?>">
-                                </div>
-                            <?php endif; ?>
-                            <div class="job-card-main">
-                                <h3>
-                                    <a href="job-details.php?id=<?php echo (int) $job['id']; ?>">
-                                        <?php echo htmlspecialchars($job['title']); ?>
-                                    </a>
-                                </h3>
-                                <p class="company-name"><?php echo htmlspecialchars($job['company_name']); ?></p>
-                            </div>
-                            <?php if (!empty($_SESSION['user_id']) && (($_SESSION['role'] ?? '') === 'seeker')) : ?>
-                                <button class="save-job-button" type="button" title="Save job">
-                                    <i class="fa-regular fa-heart"></i>
-                                </button>
-                            <?php endif; ?>
-                        </div>
-                        <div class="job-meta">
-                            <?php if (!empty($job['location'])) : ?>
-                                <span class="badge"><?php echo htmlspecialchars($job['location']); ?></span>
-                            <?php endif; ?>
-                            <?php if (!empty($job['job_type'])) : ?>
-                                <span class="badge badge-outline"><?php echo htmlspecialchars($job['job_type']); ?></span>
-                            <?php endif; ?>
-                            <?php if (!empty($job['experience_required'])) : ?>
-                                <span class="badge badge-muted"><?php echo htmlspecialchars($job['experience_required']); ?></span>
-                            <?php endif; ?>
-                        </div>
-                        <?php if (!empty($salaryText)) : ?>
-                            <p class="job-salary"><?php echo htmlspecialchars($salaryText); ?></p>
+        <div class="results-panel">
+            <div class="results-toolbar">
+                <div class="results-summary">
+                    <h2 class="results-title">Jobs</h2>
+                    <p class="results-subtitle">
+                        <?php if ($totalJobs > 0) : ?>
+                            Showing <?php echo (int) $showingStart; ?> - <?php echo (int) $showingEnd; ?> of <?php echo (int) $totalJobs; ?>
+                        <?php else : ?>
+                            No matches yet
                         <?php endif; ?>
-                        <p class="job-meta-line">
-                            <?php if ($postedAgo !== '') : ?>
-                                <span class="muted-text"><?php echo htmlspecialchars($postedAgo); ?></span>
+                    </p>
+                </div>
+                <div class="results-actions">
+                    <?php if ($hasFilters) : ?>
+                        <a class="clear-filters" href="jobs.php">Clear filters</a>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <?php if ($hasFilters && !empty($filterChips)) : ?>
+                <div class="filter-chips">
+                    <?php foreach ($filterChips as $chip) : ?>
+                        <span class="filter-chip">
+                            <span class="filter-chip-label"><?php echo htmlspecialchars($chip['label']); ?>:</span>
+                            <span class="filter-chip-value"><?php echo htmlspecialchars($chip['value']); ?></span>
+                        </span>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
+            <div class="list-grid">
+                <?php if (!empty($jobs)) : ?>
+                    <?php foreach ($jobs as $job) : ?>
+                        <?php
+                        $min = isset($job['salary_min']) ? (float) $job['salary_min'] : 0;
+                        $max = isset($job['salary_max']) ? (float) $job['salary_max'] : 0;
+                        $salaryText = 'Negotiable';
+                        if ($min > 0 && $max > 0) {
+                            $salaryText = '$' . number_format($min) . ' - $' . number_format($max);
+                        } elseif ($min > 0) {
+                            $salaryText = 'From $' . number_format($min);
+                        } elseif ($max > 0) {
+                            $salaryText = 'Up to $' . number_format($max);
+                        } elseif (!empty($job['salary'])) {
+                            $salaryText = $job['salary'];
+                        }
+                        $postedAgo = !empty($job['created_at']) ? formatRelativeTime($job['created_at']) : '';
+
+                        $companyName = (string) ($job['company_name'] ?? 'Company');
+                        $logoName = !empty($job['company_logo']) ? basename((string) $job['company_logo']) : '';
+                        $logoDiskPath = $logoName !== '' ? (__DIR__ . '/uploads/logos/' . $logoName) : '';
+                        $hasLogo = $logoDiskPath !== '' && is_file($logoDiskPath);
+
+                        $descSnippet = '';
+                        $descPlain = trim(preg_replace('/\s+/', ' ', strip_tags((string) ($job['description'] ?? ''))));
+                        if ($descPlain !== '') {
+                            $descSnippet = substr($descPlain, 0, 140);
+                            if (strlen($descPlain) > 140) {
+                                $descSnippet .= '...';
+                            }
+                        }
+                        ?>
+                        <article class="job-card">
+                            <div class="job-card-header">
+                                <?php if ($hasLogo) : ?>
+                                    <div class="job-card-logo">
+                                        <img src="uploads/logos/<?php echo htmlspecialchars($logoName); ?>" alt="<?php echo htmlspecialchars($companyName); ?>">
+                                    </div>
+                                <?php else : ?>
+                                    <div class="job-card-logo job-card-logo--placeholder" aria-hidden="true">
+                                        <span><?php echo htmlspecialchars(strtoupper(substr($companyName !== '' ? $companyName : 'C', 0, 1))); ?></span>
+                                    </div>
+                                <?php endif; ?>
+                                <div class="job-card-main">
+                                    <h3 class="job-card-title">
+                                        <a href="job-details.php?id=<?php echo (int) $job['id']; ?>">
+                                            <?php echo htmlspecialchars($job['title']); ?>
+                                        </a>
+                                    </h3>
+                                    <p class="company-name"><?php echo htmlspecialchars($companyName); ?></p>
+                                </div>
+                                <?php if (!empty($_SESSION['user_id']) && (($_SESSION['role'] ?? '') === 'seeker')) : ?>
+                                    <form class="save-job-form" action="save-job.php" method="post">
+                                        <input type="hidden" name="job_id" value="<?php echo (int) $job['id']; ?>">
+                                        <input type="hidden" name="return_to" value="<?php echo htmlspecialchars($_SERVER['REQUEST_URI']); ?>">
+                                        <button class="save-job-button" type="submit" title="Save job">
+                                            <i class="fa-regular fa-heart"></i>
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
+                            </div>
+                            <div class="job-meta">
+                                <?php if (!empty($job['location'])) : ?>
+                                    <span class="badge"><?php echo htmlspecialchars($job['location']); ?></span>
+                                <?php endif; ?>
+                                <?php if (!empty($job['job_type'])) : ?>
+                                    <span class="badge badge-outline"><?php echo htmlspecialchars($job['job_type']); ?></span>
+                                <?php endif; ?>
+                                <?php if (!empty($job['experience_required'])) : ?>
+                                    <span class="badge badge-muted"><?php echo htmlspecialchars($job['experience_required']); ?></span>
+                                <?php endif; ?>
+                                <?php if ($postedAgo !== '') : ?>
+                                    <span class="badge badge-muted"><?php echo htmlspecialchars($postedAgo); ?></span>
+                                <?php endif; ?>
+                            </div>
+                            <?php if ($descSnippet !== '') : ?>
+                                <p class="job-snippet"><?php echo htmlspecialchars($descSnippet); ?></p>
                             <?php endif; ?>
-                        </p>
-                        <a class="btn-secondary" href="job-details.php?id=<?php echo (int) $job['id']; ?>">View Details</a>
+                            <div class="job-card-footer">
+                                <p class="job-salary"><?php echo htmlspecialchars($salaryText); ?></p>
+                                <a class="btn-secondary job-card-link" href="job-details.php?id=<?php echo (int) $job['id']; ?>">
+                                    View Details <i class="fa-solid fa-arrow-right"></i>
+                                </a>
+                            </div>
+                        </article>
+                    <?php endforeach; ?>
+                <?php else : ?>
+                    <article class="job-card">
+                        <h3>No jobs found</h3>
+                        <p class="company-name">Check back soon or adjust your filters.</p>
                     </article>
-                <?php endforeach; ?>
-            <?php else : ?>
-                <article class="job-card">
-                    <h3>No jobs found</h3>
-                    <p class="company-name">Check back soon or adjust your filters.</p>
-                </article>
+                <?php endif; ?>
+            </div>
+
+            <?php if ($totalPages > 1) : ?>
+                <?php
+                $baseQuery = [
+                    'keywords' => $keywords,
+                    'location' => $location,
+                    'category' => $category,
+                ];
+                if ($minSalary !== null) {
+                    $baseQuery['min_salary'] = $minSalary;
+                }
+                if ($maxSalary !== null) {
+                    $baseQuery['max_salary'] = $maxSalary;
+                }
+                if (!empty($selectedJobTypes)) {
+                    foreach ($selectedJobTypes as $jt) {
+                        $baseQuery['job_type'][] = $jt;
+                    }
+                }
+                if (!empty($selectedExperience)) {
+                    foreach ($selectedExperience as $exp) {
+                        $baseQuery['experience'][] = $exp;
+                    }
+                }
+                ?>
+                <nav class="pagination">
+                    <?php if ($currentPage > 1) : ?>
+                        <?php $prevQuery = $baseQuery; $prevQuery['page'] = $currentPage - 1; ?>
+                        <a class="page-link" href="jobs.php?<?php echo htmlspecialchars(http_build_query($prevQuery)); ?>">Previous</a>
+                    <?php endif; ?>
+
+                    <?php for ($p = 1; $p <= $totalPages; $p++) : ?>
+                        <?php $pageQuery = $baseQuery; $pageQuery['page'] = $p; ?>
+                        <a class="page-link<?php echo $p === $currentPage ? ' active' : ''; ?>" href="jobs.php?<?php echo htmlspecialchars(http_build_query($pageQuery)); ?>">
+                            <?php echo $p; ?>
+                        </a>
+                    <?php endfor; ?>
+
+                    <?php if ($currentPage < $totalPages) : ?>
+                        <?php $nextQuery = $baseQuery; $nextQuery['page'] = $currentPage + 1; ?>
+                        <a class="page-link" href="jobs.php?<?php echo htmlspecialchars(http_build_query($nextQuery)); ?>">Next</a>
+                    <?php endif; ?>
+                </nav>
             <?php endif; ?>
         </div>
-
-        <?php if ($totalPages > 1) : ?>
-            <?php
-            $baseQuery = [
-                'keywords' => $keywords,
-                'location' => $location,
-                'category' => $category,
-            ];
-            if ($minSalary !== null) {
-                $baseQuery['min_salary'] = $minSalary;
-            }
-            if ($maxSalary !== null) {
-                $baseQuery['max_salary'] = $maxSalary;
-            }
-            if (!empty($selectedJobTypes)) {
-                foreach ($selectedJobTypes as $jt) {
-                    $baseQuery['job_type'][] = $jt;
-                }
-            }
-            if (!empty($selectedExperience)) {
-                foreach ($selectedExperience as $exp) {
-                    $baseQuery['experience'][] = $exp;
-                }
-            }
-            ?>
-            <nav class="pagination">
-                <?php if ($currentPage > 1) : ?>
-                    <?php $prevQuery = $baseQuery; $prevQuery['page'] = $currentPage - 1; ?>
-                    <a class="page-link" href="jobs.php?<?php echo htmlspecialchars(http_build_query($prevQuery)); ?>">Previous</a>
-                <?php endif; ?>
-
-                <?php for ($p = 1; $p <= $totalPages; $p++) : ?>
-                    <?php $pageQuery = $baseQuery; $pageQuery['page'] = $p; ?>
-                    <a class="page-link<?php echo $p === $currentPage ? ' active' : ''; ?>" href="jobs.php?<?php echo htmlspecialchars(http_build_query($pageQuery)); ?>">
-                        <?php echo $p; ?>
-                    </a>
-                <?php endfor; ?>
-
-                <?php if ($currentPage < $totalPages) : ?>
-                    <?php $nextQuery = $baseQuery; $nextQuery['page'] = $currentPage + 1; ?>
-                    <a class="page-link" href="jobs.php?<?php echo htmlspecialchars(http_build_query($nextQuery)); ?>">Next</a>
-                <?php endif; ?>
-            </nav>
-        <?php endif; ?>
     </section>
 </main>
 

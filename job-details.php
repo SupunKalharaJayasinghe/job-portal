@@ -12,13 +12,12 @@ if ($jobId <= 0) {
 // Fetch job with employer profile and user info
 $jobStmt = $conn->prepare(
     "SELECT jobs.*,
-            employer_profiles.company_name,
+            COALESCE(employer_profiles.company_name, users.username) AS company_name,
             employer_profiles.company_logo,
-            users.id AS employer_user_id,
-            users.website
+            users.id AS employer_user_id
      FROM jobs
-     JOIN employer_profiles ON jobs.employer_id = employer_profiles.user_id
      JOIN users ON jobs.employer_id = users.id
+     LEFT JOIN employer_profiles ON jobs.employer_id = employer_profiles.user_id
      WHERE jobs.id = ?
      LIMIT 1"
 );
@@ -33,24 +32,41 @@ if (!$job) {
     exit();
 }
 
+// Increment job views so employer dashboard stats stay up to date
+$viewsUpdate = $conn->prepare('UPDATE jobs SET views = COALESCE(views, 0) + 1 WHERE id = ?');
+if ($viewsUpdate) {
+    $viewsUpdate->bind_param('i', $jobId);
+    $viewsUpdate->execute();
+    $viewsUpdate->close();
+
+    // Reflect the increment in the current page view
+    if (isset($job['views'])) {
+        $job['views'] = (int) $job['views'] + 1;
+    } else {
+        $job['views'] = 1;
+    }
+}
+
 // Load job tags
 $jobTags = [];
-$tagStmt = $conn->prepare(
-    'SELECT job_tags.name
-     FROM job_tag_map
-     JOIN job_tags ON job_tag_map.tag_id = job_tags.id
-     WHERE job_tag_map.job_id = ?'
-);
-if ($tagStmt) {
-    $tagStmt->bind_param('i', $jobId);
-    $tagStmt->execute();
-    $tagRes = $tagStmt->get_result();
-    if ($tagRes && $tagRes->num_rows > 0) {
-        while ($tagRow = $tagRes->fetch_assoc()) {
-            $jobTags[] = $tagRow['name'];
+if (tableExists($conn, 'job_tag_map') && tableExists($conn, 'job_tags')) {
+    $tagStmt = $conn->prepare(
+        'SELECT job_tags.name
+         FROM job_tag_map
+         JOIN job_tags ON job_tag_map.tag_id = job_tags.id
+         WHERE job_tag_map.job_id = ?'
+    );
+    if ($tagStmt) {
+        $tagStmt->bind_param('i', $jobId);
+        $tagStmt->execute();
+        $tagRes = $tagStmt->get_result();
+        if ($tagRes && $tagRes->num_rows > 0) {
+            while ($tagRow = $tagRes->fetch_assoc()) {
+                $jobTags[] = $tagRow['name'];
+            }
         }
+        $tagStmt->close();
     }
-    $tagStmt->close();
 }
 
 $isLoggedIn = !empty($_SESSION['user_id']);
@@ -96,13 +112,24 @@ if ($isLoggedIn && $role === 'seeker' && $_SERVER['REQUEST_METHOD'] === 'POST') 
 
                 if (move_uploaded_file($fileTmp, $destPath)) {
                     $status = 'pending';
-                    // Optional cover_letter column if present in schema
-                    $insertStmt = $conn->prepare("INSERT INTO applications (job_id, seeker_id, resume_file, cover_letter, status) VALUES (?, ?, ?, ?, ?)");
+                    $insertSql = tableHasColumn($conn, 'applications', 'cover_letter')
+                        ? "INSERT INTO applications (job_id, seeker_id, resume_file, cover_letter, status) VALUES (?, ?, ?, ?, ?)"
+                        : "INSERT INTO applications (job_id, seeker_id, resume_file, status) VALUES (?, ?, ?, ?)";
+                    $insertStmt = $conn->prepare($insertSql);
                     if ($insertStmt) {
-                        $insertStmt->bind_param('iisss', $jobId, $userId, $newName, $coverLetter, $status);
+                        if (tableHasColumn($conn, 'applications', 'cover_letter')) {
+                            $insertStmt->bind_param('iisss', $jobId, $userId, $newName, $coverLetter, $status);
+                        } else {
+                            $insertStmt->bind_param('iiss', $jobId, $userId, $newName, $status);
+                        }
                         if ($insertStmt->execute()) {
                             $applyMessage = 'Application submitted successfully.';
                             $hasApplied = true;
+
+                            $employerId = isset($job['employer_user_id']) ? (int) $job['employer_user_id'] : 0;
+                            $seekerName = (string) ($_SESSION['username'] ?? 'A candidate');
+                            $jobTitle = (string) ($job['title'] ?? 'your job');
+                            createNotification($conn, $employerId, 'New application', $seekerName . ' applied for: ' . $jobTitle);
                         } else {
                             $applyError = 'Could not save your application.';
                         }
@@ -164,32 +191,41 @@ if ($min > 0 && $max > 0) {
 $postedAgo = !empty($job['created_at']) ? formatRelativeTime($job['created_at']) : '';
 $viewsCount = isset($job['views']) ? (int) $job['views'] : 0;
 
+$companyName = (string) ($job['company_name'] ?? 'Company');
+$logoName = !empty($job['company_logo']) ? basename((string) $job['company_logo']) : '';
+$logoDiskPath = $logoName !== '' ? (__DIR__ . '/uploads/logos/' . $logoName) : '';
+$hasLogo = $logoDiskPath !== '' && is_file($logoDiskPath);
+
 include 'includes/header.php';
 ?>
 
 <main class="job-details-page">
-    <section class="section-header">
-        <h1><?php echo htmlspecialchars($job['title']); ?></h1>
-        <p>at <?php echo htmlspecialchars($job['company_name']); ?></p>
-    </section>
-
-    <section class="job-details layout-with-filters">
-        <article class="job-details-main">
-            <header class="job-header">
-                <div class="job-header-main">
-                    <?php if (!empty($job['company_logo'])) : ?>
-                        <div class="job-header-logo">
-                            <img src="uploads/logos/<?php echo htmlspecialchars($job['company_logo']); ?>" alt="<?php echo htmlspecialchars($job['company_name']); ?>">
+    <section class="job-hero">
+        <div class="job-hero-inner">
+            <a class="job-back" href="jobs.php">
+                <i class="fa-solid fa-arrow-left"></i>
+                Back to Jobs
+            </a>
+            <div class="job-hero-card">
+                <div class="job-hero-header">
+                    <?php if ($hasLogo) : ?>
+                        <div class="job-hero-logo">
+                            <img src="uploads/logos/<?php echo htmlspecialchars($logoName); ?>" alt="<?php echo htmlspecialchars($companyName); ?>">
+                        </div>
+                    <?php else : ?>
+                        <div class="job-hero-logo job-hero-logo--placeholder" aria-hidden="true">
+                            <span><?php echo htmlspecialchars(strtoupper(substr($companyName !== '' ? $companyName : 'C', 0, 1))); ?></span>
                         </div>
                     <?php endif; ?>
-                    <div class="job-header-text">
-                        <h2><?php echo htmlspecialchars($job['title']); ?></h2>
-                        <p class="company-name">
+
+                    <div class="job-hero-main">
+                        <h1 class="job-hero-title"><?php echo htmlspecialchars($job['title']); ?></h1>
+                        <div class="job-hero-company">
                             <a href="view-profile.php?id=<?php echo (int) $job['employer_user_id']; ?>">
-                                <?php echo htmlspecialchars($job['company_name']); ?>
+                                <?php echo htmlspecialchars($companyName); ?>
                             </a>
-                        </p>
-                        <div class="job-meta">
+                        </div>
+                        <div class="job-hero-badges">
                             <?php if (!empty($job['location'])) : ?>
                                 <span class="badge"><?php echo htmlspecialchars($job['location']); ?></span>
                             <?php endif; ?>
@@ -199,39 +235,105 @@ include 'includes/header.php';
                             <?php if (!empty($job['experience_required'])) : ?>
                                 <span class="badge badge-muted"><?php echo htmlspecialchars($job['experience_required']); ?></span>
                             <?php endif; ?>
+                            <?php if (!empty($job['category'])) : ?>
+                                <span class="badge badge-muted"><?php echo htmlspecialchars($job['category']); ?></span>
+                            <?php endif; ?>
                         </div>
-                        <p class="job-salary"><?php echo htmlspecialchars($salaryText); ?></p>
-                        <p class="job-meta-line">
-                            <?php if ($postedAgo !== '') : ?>
-                                <span class="muted-text"><?php echo htmlspecialchars($postedAgo); ?></span>
-                            <?php endif; ?>
-                            <?php if ($viewsCount > 0) : ?>
-                                <span class="muted-text"> · <?php echo (int) $viewsCount; ?> views</span>
-                            <?php endif; ?>
-                        </p>
                     </div>
                 </div>
-            </header>
 
-            <section class="job-description">
-                <h2>Full Description</h2>
-                <p><?php echo nl2br(htmlspecialchars($job['description'])); ?></p>
-            </section>
+                <div class="job-hero-facts">
+                    <div class="job-fact">
+                        <span class="job-fact-label">Salary</span>
+                        <span class="job-fact-value"><?php echo htmlspecialchars($salaryText); ?></span>
+                    </div>
+                    <div class="job-fact">
+                        <span class="job-fact-label">Posted</span>
+                        <span class="job-fact-value"><?php echo htmlspecialchars($postedAgo !== '' ? $postedAgo : 'Recently'); ?></span>
+                    </div>
+                    <div class="job-fact">
+                        <span class="job-fact-label">Views</span>
+                        <span class="job-fact-value"><?php echo (int) $viewsCount; ?></span>
+                    </div>
+                </div>
 
-            <?php if (!empty($jobTags)) : ?>
-                <section class="job-tags">
-                    <h3>Tags</h3>
-                    <div class="tag-list">
+                <?php if (!empty($jobTags)) : ?>
+                    <div class="job-hero-tags">
                         <?php foreach ($jobTags as $tag) : ?>
-                            <span class="badge badge-outline"><?php echo htmlspecialchars($tag); ?></span>
+                            <span class="tag"><?php echo htmlspecialchars($tag); ?></span>
                         <?php endforeach; ?>
                     </div>
-                </section>
-            <?php endif; ?>
+                <?php endif; ?>
+            </div>
+        </div>
+    </section>
+
+    <section class="job-details layout-with-filters">
+        <article class="job-details-main">
+            <div class="content-card">
+                <div class="content-card-header">
+                    <h2>Job Description</h2>
+                </div>
+                <div class="content-card-body job-prose">
+                    <?php echo htmlspecialchars((string) ($job['description'] ?? '')); ?>
+                </div>
+            </div>
+
+            <div class="content-card role-details">
+                <div class="content-card-header">
+                    <h2>Role Details</h2>
+                </div>
+                <div class="content-card-body">
+                    <div class="detail-grid">
+                        <?php if (!empty($job['location'])) : ?>
+                            <div class="detail-item">
+                                <div class="detail-label">Location</div>
+                                <div class="detail-value"><?php echo htmlspecialchars($job['location']); ?></div>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($job['job_type'])) : ?>
+                            <div class="detail-item">
+                                <div class="detail-label">Type</div>
+                                <div class="detail-value"><?php echo htmlspecialchars($job['job_type']); ?></div>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($job['category'])) : ?>
+                            <div class="detail-item">
+                                <div class="detail-label">Category</div>
+                                <div class="detail-value"><?php echo htmlspecialchars($job['category']); ?></div>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php if (!empty($job['experience_required'])) : ?>
+                            <div class="detail-item">
+                                <div class="detail-label">Experience</div>
+                                <div class="detail-value"><?php echo htmlspecialchars($job['experience_required']); ?></div>
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="detail-item">
+                            <div class="detail-label">Salary</div>
+                            <div class="detail-value"><?php echo htmlspecialchars($salaryText); ?></div>
+                        </div>
+
+                        <div class="detail-item">
+                            <div class="detail-label">Posted</div>
+                            <div class="detail-value"><?php echo htmlspecialchars($postedAgo !== '' ? $postedAgo : 'Recently'); ?></div>
+                        </div>
+
+                        <div class="detail-item">
+                            <div class="detail-label">Views</div>
+                            <div class="detail-value"><?php echo (int) $viewsCount; ?></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </article>
 
         <aside class="job-sidebar">
-            <div class="job-apply">
+            <div class="sidebar-card sidebar-actions">
                 <?php if (!empty($applyMessage)) : ?>
                     <p class="success-text"><?php echo htmlspecialchars($applyMessage); ?></p>
                 <?php endif; ?>
@@ -247,27 +349,43 @@ include 'includes/header.php';
                     <?php else : ?>
                         <button class="btn-primary" type="button" id="openApplyModal">Apply Now</button>
                     <?php endif; ?>
-                    <button class="btn-secondary" type="button" style="margin-top:0.5rem;">
-                        <i class="fa-regular fa-heart"></i> Save Job
-                    </button>
+                    <form action="save-job.php" method="post" class="sidebar-form">
+                        <input type="hidden" name="job_id" value="<?php echo (int) $jobId; ?>">
+                        <input type="hidden" name="return_to" value="<?php echo htmlspecialchars($_SERVER['REQUEST_URI']); ?>">
+                        <button class="btn-secondary" type="submit">
+                            <i class="fa-regular fa-heart"></i> Save Job
+                        </button>
+                    </form>
                 <?php else : ?>
-                    <p>Employers cannot apply to jobs.</p>
+                    <p class="muted-text">Employers cannot apply to jobs.</p>
                 <?php endif; ?>
             </div>
 
-            <div class="company-card">
-                <h3>About the Company</h3>
-                <?php if (!empty($job['company_logo'])) : ?>
-                    <div class="company-logo">
-                        <img src="uploads/logos/<?php echo htmlspecialchars($job['company_logo']); ?>" alt="<?php echo htmlspecialchars($job['company_name']); ?>">
+            <div class="sidebar-card company-card">
+                <div class="company-card-header">
+                    <?php if ($hasLogo) : ?>
+                        <div class="company-logo">
+                            <img src="uploads/logos/<?php echo htmlspecialchars($logoName); ?>" alt="<?php echo htmlspecialchars($companyName); ?>">
+                        </div>
+                    <?php else : ?>
+                        <div class="company-logo company-logo--placeholder" aria-hidden="true">
+                            <span><?php echo htmlspecialchars(strtoupper(substr($companyName !== '' ? $companyName : 'C', 0, 1))); ?></span>
+                        </div>
+                    <?php endif; ?>
+                    <div>
+                        <h3><?php echo htmlspecialchars($companyName); ?></h3>
+                        <a class="company-profile-link" href="view-profile.php?id=<?php echo (int) $job['employer_user_id']; ?>">View Company Profile</a>
                     </div>
-                <?php endif; ?>
-                <p class="company-name"><?php echo htmlspecialchars($job['company_name']); ?></p>
-                <?php if (!empty($job['website'])) : ?>
-                    <p>
-                        <a href="<?php echo htmlspecialchars($job['website']); ?>" target="_blank" rel="noopener">Visit Website</a>
-                    </p>
-                <?php endif; ?>
+                </div>
+
+                <div class="company-card-body">
+                    <?php if (!empty($job['website'])) : ?>
+                        <a class="company-website" href="<?php echo htmlspecialchars($job['website']); ?>" target="_blank" rel="noopener">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                            Visit Website
+                        </a>
+                    <?php endif; ?>
+                </div>
             </div>
         </aside>
     </section>

@@ -9,6 +9,51 @@ $userId = $_SESSION['user_id'] ?? null;
 $username = $_SESSION['username'] ?? 'User';
 $role = $_SESSION['role'] ?? '';
 
+$hasApplicationUpdatedAt = false;
+try {
+    $colRes = $conn->query("SHOW COLUMNS FROM applications LIKE 'updated_at'");
+    if ($colRes && $colRes->num_rows > 0) {
+        $hasApplicationUpdatedAt = true;
+    }
+} catch (mysqli_sql_exception $e) {
+}
+
+$employerCompanyName = '';
+$employerApproveStatus = 'interview';
+if ($role === 'employer') {
+    try {
+        $stRes = $conn->query("SHOW COLUMNS FROM applications LIKE 'status'");
+        if ($stRes && $row = $stRes->fetch_assoc()) {
+            $type = strtolower((string) ($row['Type'] ?? ''));
+            if (strpos($type, 'enum(') !== false) {
+                if (strpos($type, "'approved'") !== false) {
+                    $employerApproveStatus = 'approved';
+                }
+            }
+        }
+    } catch (mysqli_sql_exception $e) {
+    }
+
+    try {
+        $coStmt = $conn->prepare(
+            'SELECT COALESCE(ep.company_name, u.username) AS company_name\n'
+                . 'FROM users u\n'
+                . 'LEFT JOIN employer_profiles ep ON u.id = ep.user_id\n'
+                . 'WHERE u.id = ? LIMIT 1'
+        );
+        if ($coStmt) {
+            $coStmt->bind_param('i', $userId);
+            $coStmt->execute();
+            $coRes = $coStmt->get_result();
+            if ($coRes && $coRow = $coRes->fetch_assoc()) {
+                $employerCompanyName = (string) ($coRow['company_name'] ?? '');
+            }
+            $coStmt->close();
+        }
+    } catch (mysqli_sql_exception $e) {
+    }
+}
+
 // Handle delete request for employer jobs
 if ($role === 'employer' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_job_id'])) {
     $deleteId = (int) $_POST['delete_job_id'];
@@ -22,7 +67,212 @@ if ($role === 'employer' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POS
     }
 }
 
-// Handle remove saved job for seekers
+if ($role === 'employer' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['employer_app_action'], $_POST['application_id'])) {
+    $appId = (int) $_POST['application_id'];
+    $action = sanitizeInput($_POST['employer_app_action']);
+    $jobId = isset($_POST['job_id']) ? (int) $_POST['job_id'] : 0;
+
+    if ($appId > 0) {
+        $notifySeekerId = 0;
+        $notifyJobTitle = '';
+        try {
+            if (tableHasColumn($conn, 'applications', 'seeker_id')) {
+                $ns = $conn->prepare('SELECT a.seeker_id, j.title FROM applications a JOIN jobs j ON a.job_id = j.id WHERE a.id = ? AND j.employer_id = ? LIMIT 1');
+                if ($ns) {
+                    $ns->bind_param('ii', $appId, $userId);
+                    $ns->execute();
+                    $nsRes = $ns->get_result();
+                    if ($nsRes && $nsRow = $nsRes->fetch_assoc()) {
+                        $notifySeekerId = (int) ($nsRow['seeker_id'] ?? 0);
+                        $notifyJobTitle = (string) ($nsRow['title'] ?? '');
+                    }
+                    $ns->close();
+                }
+            }
+        } catch (mysqli_sql_exception $e) {
+        }
+
+        if ($action === 'view') {
+            $newStatus = 'reviewed';
+            if ($hasApplicationUpdatedAt) {
+                $updSql = "UPDATE applications a\n"
+                    . "JOIN jobs j ON a.job_id = j.id\n"
+                    . "SET a.status = ?, a.updated_at = COALESCE(a.updated_at, NOW())\n"
+                    . "WHERE a.id = ? AND j.employer_id = ? AND LOWER(a.status) = 'pending'";
+            } else {
+                $updSql = "UPDATE applications a\n"
+                    . "JOIN jobs j ON a.job_id = j.id\n"
+                    . "SET a.status = ?\n"
+                    . "WHERE a.id = ? AND j.employer_id = ? AND LOWER(a.status) = 'pending'";
+            }
+
+            try {
+                $upd = $conn->prepare($updSql);
+                if ($upd) {
+                    $upd->bind_param('sii', $newStatus, $appId, $userId);
+                    $upd->execute();
+                    $upd->close();
+                }
+            } catch (mysqli_sql_exception $e) {
+            }
+
+            if ($notifySeekerId > 0) {
+                $jobTitle = $notifyJobTitle !== '' ? $notifyJobTitle : 'your job application';
+                createNotification($conn, $notifySeekerId, 'Application reviewed', 'Your application for "' . $jobTitle . '" has been reviewed.');
+            }
+
+            if ($jobId <= 0) {
+                try {
+                    $jb = $conn->prepare('SELECT a.job_id FROM applications a JOIN jobs j ON a.job_id = j.id WHERE a.id = ? AND j.employer_id = ? LIMIT 1');
+                    if ($jb) {
+                        $jb->bind_param('ii', $appId, $userId);
+                        $jb->execute();
+                        $jbRes = $jb->get_result();
+                        if ($jbRes && $jbRow = $jbRes->fetch_assoc()) {
+                            $jobId = (int) ($jbRow['job_id'] ?? 0);
+                        }
+                        $jb->close();
+                    }
+                } catch (mysqli_sql_exception $e) {
+                }
+            }
+
+            if ($jobId > 0) {
+                header('Location: view-applications.php?job_id=' . $jobId . '#app-' . $appId);
+            } else {
+                header('Location: dashboard.php#recent-applications');
+            }
+            exit();
+        }
+
+        if ($action === 'reject') {
+            $newStatus = 'rejected';
+            if ($hasApplicationUpdatedAt) {
+                $updSql = "UPDATE applications a\n"
+                    . "JOIN jobs j ON a.job_id = j.id\n"
+                    . "SET a.status = ?, a.updated_at = NOW()\n"
+                    . "WHERE a.id = ? AND j.employer_id = ?";
+            } else {
+                $updSql = "UPDATE applications a\n"
+                    . "JOIN jobs j ON a.job_id = j.id\n"
+                    . "SET a.status = ?\n"
+                    . "WHERE a.id = ? AND j.employer_id = ?";
+            }
+
+            try {
+                $upd = $conn->prepare($updSql);
+                if ($upd) {
+                    $upd->bind_param('sii', $newStatus, $appId, $userId);
+                    $upd->execute();
+                    $upd->close();
+                }
+            } catch (mysqli_sql_exception $e) {
+            }
+
+            if ($notifySeekerId > 0) {
+                $jobTitle = $notifyJobTitle !== '' ? $notifyJobTitle : 'your job application';
+                createNotification($conn, $notifySeekerId, 'Application rejected', 'Your application for "' . $jobTitle . '" has been marked as rejected.');
+            }
+
+            header('Location: dashboard.php#recent-applications');
+            exit();
+        }
+
+        if ($action === 'approve') {
+            $date = sanitizeInput($_POST['interview_date'] ?? '');
+            $time = sanitizeInput($_POST['interview_time'] ?? '');
+            $mode = sanitizeInput($_POST['mode'] ?? '');
+            $location = sanitizeInput($_POST['location'] ?? '');
+
+            if ($date !== '' && $time !== '') {
+                $newStatus = $employerApproveStatus;
+
+                if ($hasApplicationUpdatedAt) {
+                    $updSql = "UPDATE applications a\n"
+                        . "JOIN jobs j ON a.job_id = j.id\n"
+                        . "SET a.status = ?, a.updated_at = NOW()\n"
+                        . "WHERE a.id = ? AND j.employer_id = ?";
+                } else {
+                    $updSql = "UPDATE applications a\n"
+                        . "JOIN jobs j ON a.job_id = j.id\n"
+                        . "SET a.status = ?\n"
+                        . "WHERE a.id = ? AND j.employer_id = ?";
+                }
+
+                try {
+                    $upd = $conn->prepare($updSql);
+                    if ($upd) {
+                        $upd->bind_param('sii', $newStatus, $appId, $userId);
+                        $upd->execute();
+                        $upd->close();
+                    }
+                } catch (mysqli_sql_exception $e) {
+                }
+
+                if (tableExists($conn, 'interviews')
+                    && tableHasColumn($conn, 'interviews', 'application_id')
+                    && tableHasColumn($conn, 'interviews', 'interview_date')
+                    && tableHasColumn($conn, 'interviews', 'mode')
+                    && tableHasColumn($conn, 'interviews', 'location')
+                    && tableHasColumn($conn, 'interviews', 'status')) {
+                    $datetime = $date . ' ' . $time . ':00';
+                    try {
+                        $ownsApp = false;
+                        $ownStmt = $conn->prepare('SELECT a.id FROM applications a JOIN jobs j ON a.job_id = j.id WHERE a.id = ? AND j.employer_id = ? LIMIT 1');
+                        if ($ownStmt) {
+                            $ownStmt->bind_param('ii', $appId, $userId);
+                            $ownStmt->execute();
+                            $ownRes = $ownStmt->get_result();
+                            $ownsApp = $ownRes && $ownRes->num_rows > 0;
+                            $ownStmt->close();
+                        }
+
+                        if (!$ownsApp) {
+                            header('Location: dashboard.php#recent-applications');
+                            exit();
+                        }
+
+                        $exists = false;
+                        $chk = $conn->prepare("SELECT id FROM interviews WHERE application_id = ? AND status = 'Scheduled' LIMIT 1");
+                        if ($chk) {
+                            $chk->bind_param('i', $appId);
+                            $chk->execute();
+                            $chkRes = $chk->get_result();
+                            $exists = $chkRes && $chkRes->num_rows > 0;
+                            $chk->close();
+                        }
+
+                        if (!$exists) {
+                            $intStmt = $conn->prepare("INSERT INTO interviews (application_id, interview_date, mode, location, status) VALUES (?, ?, ?, ?, 'Scheduled')");
+                            if ($intStmt) {
+                                $intStmt->bind_param('isss', $appId, $datetime, $mode, $location);
+                                $intStmt->execute();
+                                $intStmt->close();
+                            }
+                        }
+                    } catch (mysqli_sql_exception $e) {
+                    }
+                }
+
+                if ($notifySeekerId > 0) {
+                    $jobTitle = $notifyJobTitle !== '' ? $notifyJobTitle : 'your job application';
+                    $msg = 'Interview scheduled for "' . $jobTitle . '" on ' . $date . ' ' . $time;
+                    if ($mode !== '') {
+                        $msg .= ' (' . $mode . ')';
+                    }
+                    if ($location !== '') {
+                        $msg .= ' - ' . $location;
+                    }
+                    createNotification($conn, $notifySeekerId, 'Interview scheduled', $msg);
+                }
+            }
+
+            header('Location: dashboard.php#recent-applications');
+            exit();
+        }
+    }
+}
+
 if ($role === 'seeker' && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_saved_id'])) {
     $savedId = (int) $_POST['remove_saved_id'];
     if ($savedId > 0) {
@@ -132,10 +382,12 @@ if ($role === 'seeker') {
     $seekerStats['completion'] = $profileCompletion;
 
     // Recent applications (last 5) with employer profiles
-    $appSql = "SELECT a.*, j.title, j.location, ep.company_name
+    $appSql = "SELECT a.*, j.title, j.location,
+                      COALESCE(ep.company_name, employer_user.username) AS company_name
                FROM applications a
                JOIN jobs j ON a.job_id = j.id
-               JOIN employer_profiles ep ON j.employer_id = ep.user_id
+               JOIN users employer_user ON j.employer_id = employer_user.id
+               LEFT JOIN employer_profiles ep ON j.employer_id = ep.user_id
                WHERE a.seeker_id = ?
                ORDER BY a.applied_at DESC
                LIMIT 5";
@@ -149,10 +401,12 @@ if ($role === 'seeker') {
     }
 
     // Saved jobs cards
-    $savedSql = "SELECT j.*, ep.company_name
+    $savedSql = "SELECT j.*,
+                        COALESCE(ep.company_name, employer_user.username) AS company_name
                  FROM saved_jobs sj
                  JOIN jobs j ON sj.job_id = j.id
-                 JOIN employer_profiles ep ON j.employer_id = ep.user_id
+                 JOIN users employer_user ON j.employer_id = employer_user.id
+                 LEFT JOIN employer_profiles ep ON j.employer_id = ep.user_id
                  WHERE sj.user_id = ?
                  ORDER BY sj.saved_at DESC
                  LIMIT 4";
@@ -166,11 +420,13 @@ if ($role === 'seeker') {
     }
 
     // Upcoming interviews
-    $intListSql = "SELECT i.*, j.title, ep.company_name
+    $intListSql = "SELECT i.*, j.title,
+                          COALESCE(ep.company_name, employer_user.username) AS company_name
                    FROM interviews i
                    JOIN applications a ON i.application_id = a.id
                    JOIN jobs j ON a.job_id = j.id
-                   JOIN employer_profiles ep ON j.employer_id = ep.user_id
+                   JOIN users employer_user ON j.employer_id = employer_user.id
+                   LEFT JOIN employer_profiles ep ON j.employer_id = ep.user_id
                    WHERE a.seeker_id = ? AND i.status = 'Scheduled'
                    ORDER BY i.interview_date ASC";
     $intListStmt = $conn->prepare($intListSql);
@@ -281,24 +537,50 @@ include 'includes/header.php';
 ?>
 
 <main class="dashboard-page">
-    <section class="welcome-section">
-        <?php if ($role === 'seeker') : ?>
-            <h1>Welcome back, <?php echo htmlspecialchars($username); ?></h1>
-            <p>Your profile is approximately <strong><?php echo (int) $seekerStats['completion']; ?>%</strong> complete.</p>
-        <?php elseif ($role === 'employer') : ?>
-            <h1>Welcome back, <?php echo htmlspecialchars($username); ?></h1>
-            <p>Review your open roles and candidates at a glance.</p>
-        <?php elseif ($role === 'admin') : ?>
-            <h1>Admin Dashboard</h1>
-            <p>Monitor platform-wide activity and jump into key tools.</p>
-        <?php else : ?>
-            <h1>Welcome, <?php echo htmlspecialchars($username); ?></h1>
-            <p>Manage your activity and keep track of your jobs in one place.</p>
-        <?php endif; ?>
+    <section class="welcome-section welcome-section--dashboard">
+        <div class="welcome-inner">
+            <?php if ($role === 'seeker') : ?>
+                <div class="welcome-eyebrow">Dashboard</div>
+                <h1>Welcome back, <?php echo htmlspecialchars($username); ?></h1>
+                <p>Your profile is approximately <strong><?php echo (int) $seekerStats['completion']; ?>%</strong> complete.</p>
+                <div class="welcome-actions">
+                    <a class="btn-primary" href="jobs.php"><i class="fa-solid fa-magnifying-glass"></i> Browse jobs</a>
+                    <a class="btn-secondary" href="profile.php"><i class="fa-regular fa-user"></i> Update profile</a>
+                    <a class="btn-secondary" href="messages.php"><i class="fa-regular fa-envelope"></i> Messages</a>
+                    <a class="btn-secondary" href="notifications.php"><i class="fa-regular fa-bell"></i> Notifications</a>
+                </div>
+            <?php elseif ($role === 'employer') : ?>
+                <div class="welcome-eyebrow">Dashboard</div>
+                <h1>Welcome back, <?php echo htmlspecialchars($username); ?></h1>
+                <p>Review your open roles and candidates at a glance.</p>
+                <div class="welcome-actions">
+                    <a class="btn-primary" href="post-job.php"><i class="fa-solid fa-plus"></i> Post a job</a>
+                    <a class="btn-secondary" href="seekers.php"><i class="fa-solid fa-users"></i> Browse seekers</a>
+                    <a class="btn-secondary" href="messages.php"><i class="fa-regular fa-envelope"></i> Messages</a>
+                    <a class="btn-secondary" href="notifications.php"><i class="fa-regular fa-bell"></i> Notifications</a>
+                </div>
+            <?php elseif ($role === 'admin') : ?>
+                <div class="welcome-eyebrow">Admin</div>
+                <h1>Admin Dashboard</h1>
+                <p>Monitor platform-wide activity and jump into key tools.</p>
+                <div class="welcome-actions">
+                    <a class="btn-primary" href="admin.php"><i class="fa-solid fa-screwdriver-wrench"></i> Open admin panel</a>
+                    <a class="btn-secondary" href="messages.php"><i class="fa-regular fa-envelope"></i> Messages</a>
+                    <a class="btn-secondary" href="notifications.php"><i class="fa-regular fa-bell"></i> Notifications</a>
+                </div>
+            <?php else : ?>
+                <div class="welcome-eyebrow">Dashboard</div>
+                <h1>Welcome, <?php echo htmlspecialchars($username); ?></h1>
+                <p>Manage your activity and keep track of your jobs in one place.</p>
+                <div class="welcome-actions">
+                    <a class="btn-primary" href="jobs.php"><i class="fa-solid fa-magnifying-glass"></i> Browse jobs</a>
+                </div>
+            <?php endif; ?>
+        </div>
     </section>
 
     <?php if ($role === 'seeker') : ?>
-        <section class="home-stats">
+        <section class="home-stats dashboard-stats">
             <div class="stats-grid">
                 <div class="stat-card">
                     <h3><?php echo (int) $seekerStats['applications']; ?></h3>
@@ -319,7 +601,7 @@ include 'includes/header.php';
             </div>
         </section>
 
-        <section class="seeker-section">
+        <section class="dashboard-panel seeker-section">
             <div class="section-header">
                 <div>
                     <h2>Recent Applications</h2>
@@ -359,7 +641,7 @@ include 'includes/header.php';
             </div>
         </section>
 
-        <section class="seeker-section">
+        <section class="dashboard-panel seeker-section">
             <div class="section-header">
                 <div>
                     <h2>Saved Jobs</h2>
@@ -374,7 +656,7 @@ include 'includes/header.php';
                             <h3><?php echo htmlspecialchars($job['title']); ?></h3>
                             <p class="company-name"><?php echo htmlspecialchars($job['company_name']); ?></p>
                             <p class="job-location"><?php echo htmlspecialchars($job['location']); ?><?php echo !empty($job['job_type']) ? ' · ' . htmlspecialchars($job['job_type']) : ''; ?></p>
-                            <form action="" method="post" style="margin-top:0.5rem;">
+                            <form action="" method="post" class="saved-job-actions">
                                 <input type="hidden" name="remove_saved_id" value="<?php echo (int) $job['id']; ?>">
                                 <button class="btn-secondary" type="submit">Remove</button>
                             </form>
@@ -386,7 +668,7 @@ include 'includes/header.php';
             </div>
         </section>
 
-        <section class="seeker-section">
+        <section class="dashboard-panel seeker-section">
             <div class="section-header">
                 <div>
                     <h2>Upcoming Interviews</h2>
@@ -432,7 +714,7 @@ include 'includes/header.php';
             </div>
         </section>
     <?php elseif ($role === 'employer') : ?>
-        <section class="home-stats">
+        <section class="home-stats dashboard-stats">
             <div class="stats-grid">
                 <div class="stat-card">
                     <h3><?php echo (int) $employerStats['active_jobs']; ?></h3>
@@ -447,20 +729,20 @@ include 'includes/header.php';
                     <p>Total Views</p>
                 </div>
                 <div class="stat-card">
-                    <h3><i class="fa-solid fa-briefcase" style="color:var(--primary);"></i></h3>
+                    <h3><i class="fa-solid fa-briefcase"></i></h3>
                     <p>Hire your next teammate</p>
                 </div>
             </div>
         </section>
 
-        <section class="employer-section">
+        <section class="dashboard-panel employer-section">
             <div class="section-header">
                 <div>
                     <h2>Your Jobs</h2>
                     <p>Manage all roles you currently have open or closed</p>
                 </div>
-                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-                    <a class="btn-primary" href="post-job.php">Post New Job</a>
+                <div class="dashboard-actions">
+                    <a class="btn-primary dashboard-action-primary" href="post-job.php"><i class="fa-solid fa-plus"></i> Post New Job</a>
                     <a class="btn-secondary" href="#recent-applications">View All Applications</a>
                 </div>
             </div>
@@ -490,7 +772,7 @@ include 'includes/header.php';
                                     </td>
                                     <td><?php echo isset($job['views']) ? (int) $job['views'] : 0; ?></td>
                                     <td>
-                                        <form method="post" style="display:inline;">
+                                        <form method="post" class="inline-form">
                                             <input type="hidden" name="delete_job_id" value="<?php echo (int) $job['id']; ?>">
                                             <button class="btn-secondary" type="submit">Delete</button>
                                         </form>
@@ -507,7 +789,7 @@ include 'includes/header.php';
             </div>
         </section>
 
-        <section class="employer-section" id="recent-applications">
+        <section class="dashboard-panel employer-section" id="recent-applications">
             <div class="section-header">
                 <div>
                     <h2>Recent Applications</h2>
@@ -528,13 +810,39 @@ include 'includes/header.php';
                     <tbody>
                         <?php if (!empty($recentEmployerApplications)) : ?>
                             <?php foreach ($recentEmployerApplications as $app) : ?>
+                                <?php
+                                $appStatus = strtolower((string) ($app['status'] ?? ''));
+                                $statusLabel = $appStatus !== '' ? ucwords($appStatus) : '';
+                                if ($appStatus === 'approved') {
+                                    $statusLabel = 'Approved';
+                                } elseif ($appStatus === 'interview') {
+                                    $statusLabel = 'Approved';
+                                }
+                                ?>
                                 <tr>
                                     <td><?php echo htmlspecialchars($app['seeker_name']); ?></td>
                                     <td><?php echo htmlspecialchars($app['title']); ?></td>
                                     <td><?php echo htmlspecialchars(date('Y-m-d', strtotime($app['applied_at']))); ?></td>
-                                    <td><span class="badge badge-outline"><?php echo htmlspecialchars(ucwords($app['status'])); ?></span></td>
+                                    <td><span class="badge badge-outline"><?php echo htmlspecialchars($statusLabel); ?></span></td>
                                     <td>
-                                        <a class="btn-secondary" href="view-profile.php?id=<?php echo (int) $app['seeker_id']; ?>">View</a>
+                                        <?php if ($appStatus === 'pending') : ?>
+                                            <form method="post" class="inline-form">
+                                                <input type="hidden" name="employer_app_action" value="view">
+                                                <input type="hidden" name="application_id" value="<?php echo (int) $app['id']; ?>">
+                                                <input type="hidden" name="job_id" value="<?php echo (int) ($app['job_id'] ?? 0); ?>">
+                                                <button class="btn-secondary" type="submit">View</button>
+                                            </form>
+                                        <?php elseif ($appStatus === 'reviewed') : ?>
+                                            <select class="employer-app-action" data-app-id="<?php echo (int) $app['id']; ?>"
+                                                    data-job-title="<?php echo htmlspecialchars($app['title']); ?>"
+                                                    data-company="<?php echo htmlspecialchars($employerCompanyName !== '' ? $employerCompanyName : $username); ?>">
+                                                <option value="">Actions</option>
+                                                <option value="reject">Reject</option>
+                                                <option value="approve">Approve</option>
+                                            </select>
+                                        <?php else : ?>
+                                            <span class="muted-text">—</span>
+                                        <?php endif; ?>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -547,8 +855,118 @@ include 'includes/header.php';
                 </table>
             </div>
         </section>
+
+        <?php if (!empty($recentEmployerApplications)) : ?>
+            <form id="employerRejectForm" method="post" action="" style="display:none;">
+                <input type="hidden" name="employer_app_action" value="reject">
+                <input type="hidden" name="application_id" id="employerRejectAppId" value="">
+            </form>
+
+            <div class="modal-overlay" id="approveModal" style="display:none;">
+                <div class="modal">
+                    <div class="modal-header">
+                        <h2 id="approveModalTitle">Schedule Interview</h2>
+                        <button type="button" class="modal-close" id="closeApproveModal">&times;</button>
+                    </div>
+                    <form class="auth-form" method="post" action="">
+                        <input type="hidden" name="employer_app_action" value="approve">
+                        <input type="hidden" name="application_id" id="approveAppId" value="">
+                        <div class="form-group">
+                            <label for="approve_job">Job</label>
+                            <input type="text" id="approve_job" value="" readonly>
+                        </div>
+                        <div class="form-group">
+                            <label for="approve_company">Company</label>
+                            <input type="text" id="approve_company" value="" readonly>
+                        </div>
+                        <div class="form-group">
+                            <label for="approve_date">Date</label>
+                            <input type="date" id="approve_date" name="interview_date" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="approve_time">Time</label>
+                            <input type="time" id="approve_time" name="interview_time" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="approve_mode">Mode</label>
+                            <select id="approve_mode" name="mode">
+                                <option value="Online">Online</option>
+                                <option value="Onsite">Onsite</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="approve_location">Location</label>
+                            <input type="text" id="approve_location" name="location" placeholder="Video link or office address">
+                        </div>
+                        <button class="btn-primary" type="submit">Approve & Schedule</button>
+                    </form>
+                </div>
+            </div>
+
+            <script>
+            document.addEventListener('DOMContentLoaded', function () {
+                var selects = document.querySelectorAll('.employer-app-action');
+                var rejectForm = document.getElementById('employerRejectForm');
+                var rejectId = document.getElementById('employerRejectAppId');
+
+                var modal = document.getElementById('approveModal');
+                var closeBtn = document.getElementById('closeApproveModal');
+                var approveId = document.getElementById('approveAppId');
+                var jobInput = document.getElementById('approve_job');
+                var companyInput = document.getElementById('approve_company');
+                var titleEl = document.getElementById('approveModalTitle');
+
+                function openModal(appId, jobTitle, companyName) {
+                    if (!modal) return;
+                    if (approveId) approveId.value = appId;
+                    if (jobInput) jobInput.value = jobTitle || '';
+                    if (companyInput) companyInput.value = companyName || '';
+                    if (titleEl) titleEl.textContent = 'Schedule Interview: ' + (jobTitle || '');
+                    modal.style.display = 'flex';
+                }
+
+                function closeModal() {
+                    if (modal) {
+                        modal.style.display = 'none';
+                    }
+                }
+
+                if (selects) {
+                    selects.forEach(function (sel) {
+                        sel.addEventListener('change', function () {
+                            var action = this.value;
+                            var appId = this.getAttribute('data-app-id');
+                            var jobTitle = this.getAttribute('data-job-title') || '';
+                            var companyName = this.getAttribute('data-company') || '';
+
+                            this.value = '';
+
+                            if (action === 'reject') {
+                                if (rejectId) rejectId.value = appId;
+                                if (rejectForm) rejectForm.submit();
+                            } else if (action === 'approve') {
+                                openModal(appId, jobTitle, companyName);
+                            }
+                        });
+                    });
+                }
+
+                if (closeBtn) {
+                    closeBtn.addEventListener('click', closeModal);
+                }
+
+                if (modal) {
+                    modal.addEventListener('click', function (e) {
+                        if (e.target === modal) {
+                            closeModal();
+                        }
+                    });
+                }
+            });
+            </script>
+        <?php endif; ?>
     <?php elseif ($role === 'admin') : ?>
-        <section class="home-stats">
+        <section class="home-stats dashboard-stats">
             <div class="stats-grid">
                 <div class="stat-card">
                     <h3><?php echo number_format($adminStats['users']); ?></h3>
@@ -569,15 +987,43 @@ include 'includes/header.php';
             </div>
         </section>
 
-        <section class="employer-section">
+        <section class="dashboard-panel admin-section">
             <div class="section-header">
                 <h2>Quick Links</h2>
             </div>
-            <div class="job-grid">
-                <a class="btn-primary" href="admin.php?section=users">Manage Users</a>
-                <a class="btn-secondary" href="admin.php?section=jobs">Manage Jobs</a>
-                <a class="btn-secondary" href="admin.php?section=reports">View Reports</a>
-                <a class="btn-secondary" href="admin.php?section=audit">Audit Logs</a>
+            <div class="dashboard-links">
+                <a class="dashboard-link-card" href="admin.php?section=users">
+                    <span class="dashboard-link-icon"><i class="fa-solid fa-users"></i></span>
+                    <span class="dashboard-link-text">
+                        <strong>Manage Users</strong>
+                        <span class="muted-text">View, verify, and manage accounts</span>
+                    </span>
+                    <span class="dashboard-link-arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></span>
+                </a>
+                <a class="dashboard-link-card" href="admin.php?section=jobs">
+                    <span class="dashboard-link-icon"><i class="fa-solid fa-briefcase"></i></span>
+                    <span class="dashboard-link-text">
+                        <strong>Manage Jobs</strong>
+                        <span class="muted-text">Moderate postings and activity</span>
+                    </span>
+                    <span class="dashboard-link-arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></span>
+                </a>
+                <a class="dashboard-link-card" href="admin.php?section=reports">
+                    <span class="dashboard-link-icon"><i class="fa-solid fa-chart-simple"></i></span>
+                    <span class="dashboard-link-text">
+                        <strong>View Reports</strong>
+                        <span class="muted-text">Monitor platform health</span>
+                    </span>
+                    <span class="dashboard-link-arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></span>
+                </a>
+                <a class="dashboard-link-card" href="admin.php?section=audit">
+                    <span class="dashboard-link-icon"><i class="fa-solid fa-shield"></i></span>
+                    <span class="dashboard-link-text">
+                        <strong>Audit Logs</strong>
+                        <span class="muted-text">Track critical actions</span>
+                    </span>
+                    <span class="dashboard-link-arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></span>
+                </a>
             </div>
         </section>
     <?php endif; ?>

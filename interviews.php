@@ -17,6 +17,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['interview_id'], $_POS
     $intId = (int) $_POST['interview_id'];
     $action = $_POST['action'];
 
+    $ctx = null;
+    try {
+        $ctxStmt = $conn->prepare(
+            'SELECT i.application_id, i.interview_date, j.title, a.seeker_id, j.employer_id '
+                . 'FROM interviews i '
+                . 'JOIN applications a ON i.application_id = a.id '
+                . 'JOIN jobs j ON a.job_id = j.id '
+                . 'WHERE i.id = ? LIMIT 1'
+        );
+        if ($ctxStmt) {
+            $ctxStmt->bind_param('i', $intId);
+            $ctxStmt->execute();
+            $ctxRes = $ctxStmt->get_result();
+            $ctx = $ctxRes ? $ctxRes->fetch_assoc() : null;
+            $ctxStmt->close();
+        }
+    } catch (mysqli_sql_exception $e) {
+        $ctx = null;
+    }
+
     if ($intId > 0) {
         if ($action === 'reschedule') {
             $date = sanitizeInput($_POST['interview_date'] ?? '');
@@ -30,6 +50,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['interview_id'], $_POS
                     $stmt->execute();
                     $stmt->close();
                 }
+
+                if ($ctx) {
+                    $otherId = $role === 'seeker' ? (int) ($ctx['employer_id'] ?? 0) : (int) ($ctx['seeker_id'] ?? 0);
+                    $jobTitle = (string) ($ctx['title'] ?? 'a job');
+                    if ($otherId > 0) {
+                        createNotification($conn, $otherId, 'Interview rescheduled', 'Interview for "' . $jobTitle . '" has been rescheduled to ' . $date . ' ' . $time . '.');
+                    }
+                }
             }
         } elseif ($action === 'cancel') {
             $stmt = $conn->prepare("UPDATE interviews SET status = 'Cancelled' WHERE id = ?");
@@ -38,12 +66,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['interview_id'], $_POS
                 $stmt->execute();
                 $stmt->close();
             }
+
+            if ($ctx) {
+                $otherId = $role === 'seeker' ? (int) ($ctx['employer_id'] ?? 0) : (int) ($ctx['seeker_id'] ?? 0);
+                $jobTitle = (string) ($ctx['title'] ?? 'a job');
+                if ($otherId > 0) {
+                    createNotification($conn, $otherId, 'Interview cancelled', 'Interview for "' . $jobTitle . '" has been cancelled.');
+                }
+            }
         } elseif ($action === 'complete') {
             $stmt = $conn->prepare("UPDATE interviews SET status = 'Completed' WHERE id = ?");
             if ($stmt) {
                 $stmt->bind_param('i', $intId);
                 $stmt->execute();
                 $stmt->close();
+            }
+
+            if ($ctx) {
+                $otherId = $role === 'seeker' ? (int) ($ctx['employer_id'] ?? 0) : (int) ($ctx['seeker_id'] ?? 0);
+                $jobTitle = (string) ($ctx['title'] ?? 'a job');
+                if ($otherId > 0) {
+                    createNotification($conn, $otherId, 'Interview completed', 'Interview for "' . $jobTitle . '" has been marked as completed.');
+                }
             }
         }
     }
@@ -55,11 +99,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['interview_id'], $_POS
 $interviews = [];
 
 if ($role === 'seeker') {
-    $sql = "SELECT i.*, j.title, ep.company_name
+    $sql = "SELECT i.*, j.title,
+                   COALESCE(ep.company_name, employer_user.username) AS company_name
             FROM interviews i
             JOIN applications a ON i.application_id = a.id
             JOIN jobs j ON a.job_id = j.id
-            JOIN employer_profiles ep ON j.employer_id = ep.user_id
+            JOIN users employer_user ON j.employer_id = employer_user.id
+            LEFT JOIN employer_profiles ep ON j.employer_id = ep.user_id
             WHERE a.seeker_id = ?
             ORDER BY i.interview_date DESC";
     $stmt = $conn->prepare($sql);

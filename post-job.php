@@ -18,8 +18,8 @@ $categoryOptions = ['IT', 'Marketing', 'Design', 'Finance', 'Healthcare', 'Other
 $jobTypeOptions = ['Full-time', 'Part-time', 'Contract', 'Internship'];
 $experienceOptions = ['Intern', 'Junior', 'Mid', 'Senior', 'Lead'];
 $statusOptions = [
-    'draft' => 'Draft',
     'active' => 'Active',
+    'draft' => 'Draft',
 ];
 
 $error = '';
@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $salaryMin = $salaryMinRaw !== '' ? (int) $salaryMinRaw : null;
     $salaryMax = $salaryMaxRaw !== '' ? (int) $salaryMaxRaw : null;
 
-    $statusRaw = strtolower(sanitizeInput($_POST['status'] ?? 'draft'));
+    $statusRaw = strtolower(sanitizeInput($_POST['status'] ?? 'active'));
     $status = array_key_exists($statusRaw, $statusOptions) ? $statusRaw : 'draft';
 
     $tagsInput = $_POST['tags'] ?? '';
@@ -87,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
 
                 // Handle tags using job_tags and job_tag_map tables
-                if (!empty($tags) && $jobId > 0) {
+                if (!empty($tags) && $jobId > 0 && tableExists($conn, 'job_tags') && tableExists($conn, 'job_tag_map')) {
                     $tagSelect = $conn->prepare('SELECT id FROM job_tags WHERE name = ? LIMIT 1');
                     $tagInsert = $conn->prepare('INSERT INTO job_tags (name) VALUES (?)');
                     $mapInsert = $conn->prepare('INSERT INTO job_tag_map (job_id, tag_id) VALUES (?, ?)');
@@ -140,85 +140,111 @@ include 'includes/header.php';
 ?>
 
 <main class="post-job-page">
-    <section class="form-section">
-        <div class="section-header">
+    <section class="post-job-hero">
+        <div class="post-job-hero-inner">
+            <div class="post-job-hero-eyebrow">Employer</div>
             <h1>Post a New Job</h1>
             <p>Share the details of your open role with job seekers.</p>
+            <div class="post-job-hero-actions">
+                <a class="btn-secondary" href="dashboard.php"><i class="fa-solid fa-gauge"></i> Dashboard</a>
+            </div>
         </div>
-        <?php if (!empty($error)) : ?>
-            <p class="error-text"><?php echo htmlspecialchars($error); ?></p>
-        <?php endif; ?>
-        <form class="job-form" action="" method="post">
-            <div class="form-group">
-                <label for="job_title">Job Title</label>
-                <input type="text" id="job_title" name="job_title" placeholder="e.g. Backend Engineer" required>
+    </section>
+
+    <section class="post-job-layout">
+        <aside class="post-job-rail">
+            <h2>Tips for better applicants</h2>
+            <ul class="post-job-tips">
+                <li>Use a clear title and include the key tech stack.</li>
+                <li>Keep the salary range realistic to improve response rate.</li>
+                <li>Add tags that match what candidates search for.</li>
+            </ul>
+        </aside>
+
+        <section class="form-section post-job-card">
+            <div class="post-job-card-header">
+                <h2>Job details</h2>
+                <p>All fields marked required must be filled before publishing.</p>
             </div>
 
-            <div class="form-group">
-                <label for="job_category">Category</label>
-                <select id="job_category" name="job_category" required>
-                    <option value="">Select category</option>
-                    <?php foreach ($categoryOptions as $cat) : ?>
-                        <option value="<?php echo htmlspecialchars($cat); ?>"><?php echo htmlspecialchars($cat); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
+            <?php if (!empty($error)) : ?>
+                <p class="error-text"><?php echo htmlspecialchars($error); ?></p>
+            <?php endif; ?>
 
-            <div class="form-group">
-                <label for="job_location">Location</label>
-                <input type="text" id="job_location" name="job_location" placeholder="City or Remote" required>
-            </div>
+            <form class="job-form" action="" method="post">
+                <div class="post-job-form-grid">
+                    <div class="form-group">
+                        <label for="job_title">Job Title</label>
+                        <input type="text" id="job_title" name="job_title" placeholder="e.g. Backend Engineer" required>
+                    </div>
 
-            <div class="form-group">
-                <label for="job_type">Job Type</label>
-                <select id="job_type" name="job_type" required>
-                    <option value="">Select type</option>
-                    <?php foreach ($jobTypeOptions as $opt) : ?>
-                        <option value="<?php echo htmlspecialchars($opt); ?>"><?php echo htmlspecialchars($opt); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
+                    <div class="form-group">
+                        <label for="job_category">Category</label>
+                        <select id="job_category" name="job_category" required>
+                            <option value="">Select category</option>
+                            <?php foreach ($categoryOptions as $cat) : ?>
+                                <option value="<?php echo htmlspecialchars($cat); ?>"><?php echo htmlspecialchars($cat); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
 
-            <div class="form-group">
-                <label for="experience_required">Experience Required</label>
-                <select id="experience_required" name="experience_required" required>
-                    <option value="">Select level</option>
-                    <?php foreach ($experienceOptions as $exp) : ?>
-                        <option value="<?php echo htmlspecialchars($exp); ?>"><?php echo htmlspecialchars($exp); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
+                    <div class="form-group">
+                        <label for="job_location">Location</label>
+                        <input type="text" id="job_location" name="job_location" placeholder="City or Remote" required>
+                    </div>
 
-            <div class="form-group">
-                <label>Salary Range (per month)</label>
-                <div class="filter-salary-range">
-                    <input type="number" id="salary_min" name="salary_min" min="0" placeholder="Min" required>
-                    <span>-</span>
-                    <input type="number" id="salary_max" name="salary_max" min="0" placeholder="Max" required>
+                    <div class="form-group">
+                        <label for="job_type">Job Type</label>
+                        <select id="job_type" name="job_type" required>
+                            <option value="">Select type</option>
+                            <?php foreach ($jobTypeOptions as $opt) : ?>
+                                <option value="<?php echo htmlspecialchars($opt); ?>"><?php echo htmlspecialchars($opt); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="experience_required">Experience Required</label>
+                        <select id="experience_required" name="experience_required" required>
+                            <option value="">Select level</option>
+                            <?php foreach ($experienceOptions as $exp) : ?>
+                                <option value="<?php echo htmlspecialchars($exp); ?>"><?php echo htmlspecialchars($exp); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="status">Status</label>
+                        <select id="status" name="status" required>
+                            <?php foreach ($statusOptions as $value => $label) : ?>
+                                <option value="<?php echo htmlspecialchars($value); ?>"><?php echo htmlspecialchars($label); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="form-group post-job-form-full">
+                        <label>Salary Range (per month)</label>
+                        <div class="filter-salary-range">
+                            <input type="number" id="salary_min" name="salary_min" min="0" placeholder="Min" required>
+                            <span>-</span>
+                            <input type="number" id="salary_max" name="salary_max" min="0" placeholder="Max" required>
+                        </div>
+                    </div>
+
+                    <div class="form-group post-job-form-full">
+                        <label for="job_description">Job Description</label>
+                        <textarea id="job_description" name="job_description" rows="6" placeholder="Describe the role, responsibilities, and ideal candidate" required></textarea>
+                    </div>
+
+                    <div class="form-group post-job-form-full">
+                        <label for="tags">Tags (comma-separated)</label>
+                        <input type="text" id="tags" name="tags" placeholder="e.g. PHP, Laravel, Remote, Fintech">
+                    </div>
                 </div>
-            </div>
 
-            <div class="form-group">
-                <label for="job_description">Job Description</label>
-                <textarea id="job_description" name="job_description" rows="6" placeholder="Describe the role, responsibilities, and ideal candidate" required></textarea>
-            </div>
-
-            <div class="form-group">
-                <label for="tags">Tags (comma-separated)</label>
-                <input type="text" id="tags" name="tags" placeholder="e.g. PHP, Laravel, Remote, Fintech">
-            </div>
-
-            <div class="form-group">
-                <label for="status">Status</label>
-                <select id="status" name="status" required>
-                    <?php foreach ($statusOptions as $value => $label) : ?>
-                        <option value="<?php echo htmlspecialchars($value); ?>"><?php echo htmlspecialchars($label); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-
-            <button class="btn-primary" type="submit">Publish Job</button>
-        </form>
+                <button class="btn-primary" type="submit">Publish Job</button>
+            </form>
+        </section>
     </section>
 </main>
 

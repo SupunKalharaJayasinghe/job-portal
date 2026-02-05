@@ -49,42 +49,66 @@ include 'includes/header.php';
 ?>
 
 <main class="auth-page">
-    <section class="form-section">
-        <div class="section-header">
-            <h1>Welcome Back</h1>
-            <p>Log in to access your dashboard.</p>
+    <section class="auth-layout">
+        <aside class="auth-rail">
+            <div class="auth-rail-inner">
+                <div class="auth-rail-eyebrow">CareerNest</div>
+                <h2>Welcome back</h2>
+                <p>Log in to manage applications, saved jobs, and your profile — all in one place.</p>
+                <div class="auth-rail-badges">
+                    <span class="pill"><i class="fa-solid fa-shield"></i> Secure access</span>
+                    <span class="pill"><i class="fa-solid fa-bolt"></i> Fast experience</span>
+                    <span class="pill"><i class="fa-solid fa-moon"></i> Dark mode</span>
+                </div>
+            </div>
+        </aside>
+
+        <div class="auth-card">
+            <div class="auth-card-header">
+                <h1>Login</h1>
+                <p>Access your dashboard and start tracking your progress.</p>
+            </div>
+
+            <?php if (isset($_GET['registered'])) : ?>
+                <p class="success-text">Account created successfully. Please log in.</p>
+            <?php endif; ?>
+            <?php if (!empty($error)) : ?>
+                <p class="error-text"><?php echo htmlspecialchars($error); ?></p>
+            <?php endif; ?>
+
+            <form class="auth-form" action="" method="post" novalidate>
+                <div class="form-group">
+                    <label for="login_email"><i class="fa-solid fa-envelope"></i> Email</label>
+                    <input
+                        type="email"
+                        id="login_email"
+                        name="email"
+                        placeholder="Enter your email"
+                        value="<?php echo isset($_COOKIE['remember_email']) ? htmlspecialchars($_COOKIE['remember_email']) : ''; ?>"
+                        required
+                    >
+                </div>
+                <div class="form-group">
+                    <label for="login_password"><i class="fa-solid fa-lock"></i> Password</label>
+                    <input type="password" id="login_password" name="password" placeholder="Enter your password" required>
+                </div>
+
+                <div class="auth-row">
+                    <label class="auth-check">
+                        <input type="checkbox" name="remember_me" value="1" <?php echo isset($_COOKIE['remember_email']) ? 'checked' : ''; ?>>
+                        <span>Remember me</span>
+                    </label>
+                    <a href="#" class="auth-link">Forgot Password?</a>
+                </div>
+
+                <button class="btn-primary" type="submit">Login</button>
+            </form>
+
+            <div class="auth-card-footer">
+                <p class="muted-text">New here?</p>
+                <a class="btn-secondary" href="register.php">Create an account</a>
+            </div>
         </div>
-        <?php if (isset($_GET['registered'])) : ?>
-            <p class="success-text">Account created successfully. Please log in.</p>
-        <?php endif; ?>
-        <?php if (!empty($error)) : ?>
-            <p class="error-text"><?php echo htmlspecialchars($error); ?></p>
-        <?php endif; ?>
-        <form class="auth-form" action="" method="post" novalidate>
-            <div class="form-group">
-                <label for="login_email"><i class="fa-solid fa-envelope"></i> Email</label>
-                <input
-                    type="email"
-                    id="login_email"
-                    name="email"
-                    placeholder="Enter your email"
-                    value="<?php echo isset($_COOKIE['remember_email']) ? htmlspecialchars($_COOKIE['remember_email']) : ''; ?>"
-                    required
-                >
-            </div>
-            <div class="form-group">
-                <label for="login_password"><i class="fa-solid fa-lock"></i> Password</label>
-                <input type="password" id="login_password" name="password" placeholder="Enter your password" required>
-            </div>
-            <div class="form-group" style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;flex-wrap:wrap;">
-                <label style="display:flex;align-items:center;gap:0.4rem;font-weight:400;">
-                    <input type="checkbox" name="remember_me" value="1" <?php echo isset($_COOKIE['remember_email']) ? 'checked' : ''; ?>>
-                    <span>Remember me</span>
-                </label>
-                <a href="#" class="muted-text" style="font-size:0.875rem;">Forgot Password?</a>
-            </div>
-            <button class="btn-primary" type="submit">Login</button>
-        </form>
     </section>
 </main>
 

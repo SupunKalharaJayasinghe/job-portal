@@ -27,10 +27,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_saved_id'])) {
 }
 
 $savedJobs = [];
-$sql = "SELECT j.*, ep.company_name, ep.company_logo, sj.saved_at
+$sql = "SELECT j.*,
+               COALESCE(ep.company_name, employer_user.username) AS company_name,
+               ep.company_logo,
+               sj.saved_at
         FROM saved_jobs sj
         JOIN jobs j ON sj.job_id = j.id
-        JOIN employer_profiles ep ON j.employer_id = ep.user_id
+        JOIN users employer_user ON j.employer_id = employer_user.id
+        LEFT JOIN employer_profiles ep ON j.employer_id = ep.user_id
         WHERE sj.user_id = ?
         ORDER BY sj.saved_at DESC";
 $stmt = $conn->prepare($sql);

@@ -45,5 +45,6 @@
         </div>
     </footer>
     <script src="assets/js/script.js"></script>
+    <script src="assets/js/dither.js"></script>
 </body>
 </html>

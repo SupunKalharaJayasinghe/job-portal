@@ -34,10 +34,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['withdraw_id'])) {
 }
 
 $applications = [];
-$sql = "SELECT a.*, j.title, j.location, ep.company_name
+$sql = "SELECT a.*, j.title, j.location,
+               COALESCE(ep.company_name, employer_user.username) AS company_name
         FROM applications a
         JOIN jobs j ON a.job_id = j.id
-        JOIN employer_profiles ep ON j.employer_id = ep.user_id
+        JOIN users employer_user ON j.employer_id = employer_user.id
+        LEFT JOIN employer_profiles ep ON j.employer_id = ep.user_id
         WHERE a.seeker_id = ?";
 
 $params = [$userId];
@@ -53,7 +55,7 @@ $sql .= " ORDER BY a.applied_at DESC";
 
 $stmt = $conn->prepare($sql);
 if ($stmt) {
-    $stmt->bind_param($types, ...$params);
+    bindStmtParams($stmt, $types, $params);
     $stmt->execute();
     $res = $stmt->get_result();
     $applications = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];

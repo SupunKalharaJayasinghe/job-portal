@@ -109,13 +109,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $success = 'Notification preferences updated.';
     } elseif ($action === 'update_visibility' && $role === 'seeker') {
         $visibility = ($_POST['profile_visibility'] ?? 'public') === 'private' ? 'private' : 'public';
-        $sp = $conn->prepare('UPDATE seeker_profiles SET profile_visibility = ? WHERE user_id = ?');
-        if ($sp) {
-            $sp->bind_param('si', $visibility, $userId);
-            $sp->execute();
-            $sp->close();
+        if (tableExists($conn, 'seeker_profiles') && tableHasColumn($conn, 'seeker_profiles', 'user_id') && tableHasColumn($conn, 'seeker_profiles', 'profile_visibility')) {
+            $existsStmt = $conn->prepare('SELECT user_id FROM seeker_profiles WHERE user_id = ? LIMIT 1');
+            $hasRow = false;
+            if ($existsStmt) {
+                $existsStmt->bind_param('i', $userId);
+                $existsStmt->execute();
+                $exRes = $existsStmt->get_result();
+                $hasRow = $exRes && $exRes->num_rows > 0;
+                $existsStmt->close();
+            }
+
+            if (!$hasRow) {
+                $ins = $conn->prepare("INSERT INTO seeker_profiles (user_id, profile_visibility) VALUES (?, 'public')");
+                if ($ins) {
+                    $ins->bind_param('i', $userId);
+                    $ins->execute();
+                    $ins->close();
+                }
+            }
+
+            $sp = $conn->prepare('UPDATE seeker_profiles SET profile_visibility = ? WHERE user_id = ?');
+            if ($sp) {
+                $sp->bind_param('si', $visibility, $userId);
+                $sp->execute();
+                $sp->close();
+            }
+            $success = 'Profile visibility updated.';
+        } else {
+            $error = 'Profile visibility is not supported in the current database schema.';
         }
-        $success = 'Profile visibility updated.';
     } elseif ($action === 'delete_account') {
         $confirm = trim($_POST['confirm_text'] ?? '');
         if ($confirm !== 'DELETE') {

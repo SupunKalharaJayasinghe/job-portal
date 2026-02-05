@@ -59,26 +59,51 @@ $article = $articles[$slug] ?? null;
 
 <main class="news-page">
     <?php if (!$article): ?>
-        <section class="about-hero">
-            <h1>News Not Found</h1>
-            <p>The news article you are looking for could not be found.</p>
+        <section class="news-hero news-hero--article">
+            <div class="news-hero-inner">
+                <div class="news-hero-eyebrow">News</div>
+                <h1>News not found</h1>
+                <p>The news article you are looking for could not be found.</p>
+                <div class="news-hero-actions">
+                    <a class="btn-secondary news-hero-secondary" href="news.php">
+                        <i class="fa-solid fa-arrow-left"></i> Back to News
+                    </a>
+                    <a class="btn-primary" href="jobs.php">Explore Jobs</a>
+                </div>
+            </div>
         </section>
     <?php else: ?>
-        <section class="about-hero">
-            <h1><?php echo htmlspecialchars($article['title']); ?></h1>
-            <p><?php echo htmlspecialchars($article['summary']); ?></p>
-        </section>
-
-        <section class="section-header">
-            <h2>Details</h2>
-            <p><?php echo htmlspecialchars($article['date']); ?> · <?php echo htmlspecialchars($article['category']); ?></p>
-        </section>
-
-        <section class="job-details">
-            <article class="news-card">
+        <section class="news-hero news-hero--article">
+            <div class="news-hero-inner">
+                <a class="news-back" href="news.php">
+                    <i class="fa-solid fa-arrow-left"></i>
+                    Back to News
+                </a>
                 <div class="tag"><?php echo htmlspecialchars($article['tag']); ?></div>
-                <p><?php echo nl2br(htmlspecialchars($article['body'])); ?></p>
+                <h1><?php echo htmlspecialchars($article['title']); ?></h1>
+                <p><?php echo htmlspecialchars($article['summary']); ?></p>
+                <div class="news-meta news-meta--hero">
+                    <span><i class="fa-regular fa-calendar"></i> <?php echo htmlspecialchars($article['date']); ?></span>
+                    <span><i class="fa-regular fa-folder"></i> <?php echo htmlspecialchars($article['category']); ?></span>
+                </div>
+            </div>
+        </section>
+
+        <section class="news-article">
+            <article class="news-article-card">
+                <div class="news-prose"><?php echo htmlspecialchars($article['body']); ?></div>
             </article>
+
+            <div class="news-article-cta">
+                <div>
+                    <h2>Keep exploring</h2>
+                    <p>Browse more updates or jump back into the job search.</p>
+                </div>
+                <div class="news-article-cta-actions">
+                    <a class="btn-secondary" href="news.php">More news</a>
+                    <a class="btn-primary" href="jobs.php">Explore jobs</a>
+                </div>
+            </div>
         </section>
     <?php endif; ?>
 </main>

@@ -65,17 +65,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // Initialize profile records for normalized schema
                     if ($role === 'employer') {
                         if ($companyName !== '') {
-                            $empStmt = $conn->prepare('INSERT INTO employer_profiles (user_id, company_name) VALUES (?, ?)');
-                            $empStmt->bind_param('is', $newUserId, $companyName);
-                            $empStmt->execute();
-                            $empStmt->close();
+                            if (tableExists($conn, 'employer_profiles') && tableHasColumn($conn, 'employer_profiles', 'user_id')) {
+                                if (tableHasColumn($conn, 'employer_profiles', 'company_name')) {
+                                    $empStmt = $conn->prepare('INSERT INTO employer_profiles (user_id, company_name) VALUES (?, ?)');
+                                    $empStmt->bind_param('is', $newUserId, $companyName);
+                                } else {
+                                    $empStmt = $conn->prepare('INSERT INTO employer_profiles (user_id) VALUES (?)');
+                                    $empStmt->bind_param('i', $newUserId);
+                                }
+                                if ($empStmt) {
+                                    $empStmt->execute();
+                                    $empStmt->close();
+                                }
+                            }
                         }
                     } else {
                         // Create a basic seeker profile row so future lookups work
-                        $seekStmt = $conn->prepare('INSERT INTO seeker_profiles (user_id) VALUES (?)');
-                        $seekStmt->bind_param('i', $newUserId);
-                        $seekStmt->execute();
-                        $seekStmt->close();
+                        if (tableExists($conn, 'seeker_profiles') && tableHasColumn($conn, 'seeker_profiles', 'user_id')) {
+                            if (tableHasColumn($conn, 'seeker_profiles', 'profile_visibility')) {
+                                $seekStmt = $conn->prepare("INSERT INTO seeker_profiles (user_id, profile_visibility) VALUES (?, 'public')");
+                                $seekStmt->bind_param('i', $newUserId);
+                            } else {
+                                $seekStmt = $conn->prepare('INSERT INTO seeker_profiles (user_id) VALUES (?)');
+                                $seekStmt->bind_param('i', $newUserId);
+                            }
+                            if ($seekStmt) {
+                                $seekStmt->execute();
+                                $seekStmt->close();
+                            }
+                        }
                     }
 
                     header('Location: login.php?registered=1');
@@ -95,46 +113,68 @@ include 'includes/header.php';
 ?>
 
 <main class="auth-page">
-    <section class="form-section">
-        <div class="section-header">
-            <h1>Create Your Account</h1>
-            <p>Register as a job seeker or employer to get started.</p>
+    <section class="auth-layout">
+        <aside class="auth-rail">
+            <div class="auth-rail-inner">
+                <div class="auth-rail-eyebrow">CareerNest</div>
+                <h2>Create your account</h2>
+                <p>Join as a job seeker or employer and unlock a smoother hiring experience.</p>
+                <div class="auth-rail-badges">
+                    <span class="pill"><i class="fa-solid fa-briefcase"></i> Apply faster</span>
+                    <span class="pill"><i class="fa-solid fa-people-group"></i> Hire smarter</span>
+                    <span class="pill"><i class="fa-solid fa-chart-line"></i> Track progress</span>
+                </div>
+            </div>
+        </aside>
+
+        <div class="auth-card">
+            <div class="auth-card-header">
+                <h1>Register</h1>
+                <p>Create a new account in under a minute.</p>
+            </div>
+
+            <?php if (!empty($error)) : ?>
+                <p class="error-text"><?php echo htmlspecialchars($error); ?></p>
+            <?php endif; ?>
+            <div id="registerError" class="error-text" style="display:none;"></div>
+
+            <form id="registerForm" class="auth-form" action="" method="post" novalidate>
+                <div class="form-group">
+                    <label for="username"><i class="fa-solid fa-user"></i> Full Name</label>
+                    <input type="text" id="username" name="username" placeholder="Enter your full name" value="<?php echo htmlspecialchars($usernameValue); ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="email"><i class="fa-solid fa-envelope"></i> Email</label>
+                    <input type="email" id="email" name="email" placeholder="Enter your email" value="<?php echo htmlspecialchars($emailValue); ?>" required>
+                </div>
+                <div class="form-group">
+                    <label for="password"><i class="fa-solid fa-lock"></i> Password</label>
+                    <input type="password" id="password" name="password" placeholder="Create a password" required>
+                </div>
+                <div class="form-group">
+                    <label for="confirm_password"><i class="fa-solid fa-lock"></i> Confirm Password</label>
+                    <input type="password" id="confirm_password" name="confirm_password" placeholder="Re-enter your password" required>
+                </div>
+                <div class="form-group">
+                    <label for="user_type"><i class="fa-solid fa-user-check"></i> I am a...</label>
+                    <select id="user_type" name="user_type" required>
+                        <option value="" disabled <?php echo $roleValue === '' ? 'selected' : ''; ?>>Select an option</option>
+                        <option value="seeker" <?php echo $roleValue === 'seeker' ? 'selected' : ''; ?>>Job Seeker</option>
+                        <option value="employer" <?php echo $roleValue === 'employer' ? 'selected' : ''; ?>>Employer</option>
+                    </select>
+                </div>
+                <div class="form-group" id="company_field_group" style="display:none;">
+                    <label for="company_name"><i class="fa-solid fa-building"></i> Company Name</label>
+                    <input type="text" id="company_name" name="company_name" placeholder="Enter your company name" value="<?php echo htmlspecialchars($companyNameValue); ?>">
+                </div>
+                <button class="btn-primary" type="submit">Register</button>
+            </form>
+
+            <div class="auth-card-footer">
+                <p class="muted-text">Already have an account?</p>
+                <a class="btn-secondary" href="login.php">Login</a>
+            </div>
         </div>
-        <?php if (!empty($error)) : ?>
-            <p class="error-text"><?php echo htmlspecialchars($error); ?></p>
-        <?php endif; ?>
-        <div id="registerError" class="error-text" style="display:none;"></div>
-        <form id="registerForm" class="auth-form" action="" method="post" novalidate>
-            <div class="form-group">
-                <label for="username"><i class="fa-solid fa-user"></i> Full Name</label>
-                <input type="text" id="username" name="username" placeholder="Enter your full name" value="<?php echo htmlspecialchars($usernameValue); ?>" required>
-            </div>
-            <div class="form-group">
-                <label for="email"><i class="fa-solid fa-envelope"></i> Email</label>
-                <input type="email" id="email" name="email" placeholder="Enter your email" value="<?php echo htmlspecialchars($emailValue); ?>" required>
-            </div>
-            <div class="form-group">
-                <label for="password"><i class="fa-solid fa-lock"></i> Password</label>
-                <input type="password" id="password" name="password" placeholder="Create a password" required>
-            </div>
-            <div class="form-group">
-                <label for="confirm_password"><i class="fa-solid fa-lock"></i> Confirm Password</label>
-                <input type="password" id="confirm_password" name="confirm_password" placeholder="Re-enter your password" required>
-            </div>
-            <div class="form-group">
-                <label for="user_type"><i class="fa-solid fa-user-check"></i> I am a...</label>
-                <select id="user_type" name="user_type" required>
-                    <option value="" disabled <?php echo $roleValue === '' ? 'selected' : ''; ?>>Select an option</option>
-                    <option value="seeker" <?php echo $roleValue === 'seeker' ? 'selected' : ''; ?>>Job Seeker</option>
-                    <option value="employer" <?php echo $roleValue === 'employer' ? 'selected' : ''; ?>>Employer</option>
-                </select>
-            </div>
-            <div class="form-group" id="company_field_group" style="display:none;">
-                <label for="company_name"><i class="fa-solid fa-building"></i> Company Name</label>
-                <input type="text" id="company_name" name="company_name" placeholder="Enter your company name" value="<?php echo htmlspecialchars($companyNameValue); ?>">
-            </div>
-            <button class="btn-primary" type="submit">Register</button>
-        </form>
     </section>
 </main>
 
