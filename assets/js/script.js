@@ -35,7 +35,8 @@ document.addEventListener('DOMContentLoaded', function () {
         // Close panel when a nav link is clicked
         navLinks.addEventListener('click', function (event) {
             var target = event.target;
-            if (target.tagName === 'A' && navLinks.classList.contains('active')) {
+            var link = target && target.closest ? target.closest('a') : (target && target.tagName === 'A' ? target : null);
+            if (link && navLinks.classList.contains('active')) {
                 closeMenu();
             }
         });

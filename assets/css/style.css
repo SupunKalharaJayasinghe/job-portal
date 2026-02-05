@@ -4917,6 +4917,8 @@ input[type="file"]::file-selector-button:hover {
         background: var(--bg-white);
         flex-direction: column;
         align-items: stretch;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
         padding: 4rem 1rem 1.5rem;
         border-right: 1px solid var(--border);
         transition: left 0.25s ease-in-out;
@@ -4943,7 +4945,11 @@ input[type="file"]::file-selector-button:hover {
         right: 0;
         bottom: 0;
         background: rgba(15, 23, 42, 0.5);
-        z-index: 110;
+        z-index: 95;
+    }
+
+    .home-stats .stat-card:hover {
+        transform: none;
     }
 
     .hero-section {
@@ -5098,5 +5104,19 @@ input[type="file"]::file-selector-button:hover {
     
     .stat-card p {
         font-size: 0.75rem;
+    }
+
+    .home-stats .stat-card h3 {
+        font-size: 1.6rem;
+    }
+
+    .home-stats .stat-card p {
+        font-size: 0.8125rem;
+    }
+}
+
+@media (max-width: 360px) {
+    .stats-grid {
+        grid-template-columns: 1fr;
     }
 }
